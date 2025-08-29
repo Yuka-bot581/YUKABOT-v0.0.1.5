@@ -7,114 +7,51 @@ from discord.ext import commands
 from discord import app_commands
 from myserver import server_on
 
-
 # ---------------------- CONFIG & INTENTS ----------------------
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.messages = True
-intents.message_content = False  # not needed
+intents.message_content = False
 intents.reactions = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 TREE_SYNCED = False
 
-DATA_FILE = "reaction_roles.json"
+# ---------------------- DATA FILES ----------------------
+REACTION_FILE = "reaction_roles.json"
+VERIFY_FILE = "verify_config.json"
 
-# ---------------------- STORAGE UTIL ----------------------
-def load_data():
-    if not os.path.exists(DATA_FILE):
+def load_json(path):
+    if not os.path.exists(path):
         return {}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except Exception:
             return {}
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-reaction_roles = load_data()  # {message_id: {"emoji_map": {key: role_id}, "guild_id": int, "channel_id": int}}
+reaction_roles = load_json(REACTION_FILE)
+verify_config = load_json(VERIFY_FILE)
 
 # ---------------------- HELPERS ----------------------
 EMOJI_RE = re.compile(r"^<a?:[A-Za-z0-9_~]+:(\d+)>$")
 
-
 def normalize_emoji_key(s: str) -> str:
-    """
-    Turn an emoji string from user input or event into a comparable key.
-    - For custom emoji like <a:name:1234567890>, store as f"e:{id}"
-    - For unicode emoji, store the raw character(s)
-    """
     s = s.strip()
     m = EMOJI_RE.match(s)
     if m:
         return f"e:{m.group(1)}"
-    return s  # assume unicode
-
+    return s
 
 def emoji_key_from_payload(payload_emoji) -> str:
-    # payload_emoji can be PartialEmoji
-    if payload_emoji.id:  # custom
+    if payload_emoji.id:
         return f"e:{payload_emoji.id}"
-    return str(payload_emoji)  # unicode
-
-
-def parse_pairs(pairs_str: str):
-    """
-    Parse input like: "😀=@Member, 🎮=@Gamer, <:cool:123456789>=@Cool"
-    Returns list of tuples (emoji_key, role_id) and a list of user-facing labels for the embed.
-    """
-    pairs = []
-    labels = []
-    for raw in re.split(r",|\n", pairs_str):
-        item = raw.strip()
-        if not item:
-            continue
-        if "=" not in item:
-            raise ValueError(f"รูปแบบไม่ถูกต้อง: '{item}' (ควรเป็น EMOJI=ROLE)")
-        emoji_part, role_part = [p.strip() for p in item.split("=", 1)]
-        # role can be mention <@&id> or plain name; prefer mention
-        role_id = None
-        m = re.search(r"<@&(?P<id>\d+)>", role_part)
-        if m:
-            role_id = int(m.group("id"))
-        # Fallback: try to parse numeric id
-        if role_id is None and role_part.isdigit():
-            role_id = int(role_part)
-        if role_id is None:
-            # leave name; we'll resolve later during command execution
-            role_id = role_part  # temporary marker
-        emoji_key = normalize_emoji_key(emoji_part)
-        pairs.append((emoji_key, role_id, emoji_part))
-        labels.append((emoji_part, role_part))
-    return pairs, labels
-
-
-async def resolve_role_ids(guild: discord.Guild, items):
-    """
-    Convert any role names to IDs. Keeps ints as-is.
-    items: list of (emoji_key, role_id_or_name, emoji_render)
-    Returns list of (emoji_key, role_id, emoji_render)
-    """
-    resolved = []
-    for emoji_key, role_ref, emoji_render in items:
-        role_id = None
-        if isinstance(role_ref, int):
-            role_id = role_ref
-        else:
-            # try exact name match (case-sensitive then insensitive)
-            role = discord.utils.get(guild.roles, name=role_ref)
-            if role is None:
-                role = discord.utils.find(lambda r: r.name.lower() == str(role_ref).lower(), guild.roles)
-            if role:
-                role_id = role.id
-        if role_id is None:
-            raise ValueError(f"ไม่พบยศ/Role: '{role_ref}' ในเซิร์ฟเวอร์นี้")
-        resolved.append((emoji_key, role_id, emoji_render))
-    return resolved
-
+    return str(payload_emoji)
 
 async def ensure_react_permissions(channel: discord.TextChannel):
     perms = channel.permissions_for(channel.guild.me)
@@ -130,7 +67,6 @@ async def ensure_react_permissions(channel: discord.TextChannel):
     if missing:
         raise PermissionError("บอทขาดสิทธิ์: " + ", ".join(missing))
 
-
 async def add_reactions_safely(message: discord.Message, emoji_keys):
     for key in emoji_keys:
         try:
@@ -142,7 +78,7 @@ async def add_reactions_safely(message: discord.Message, emoji_keys):
                 await message.add_reaction(emoji)
             else:
                 await message.add_reaction(key)
-            await asyncio.sleep(0.3)  # avoid rate limits
+            await asyncio.sleep(0.3)
         except Exception:
             continue
 
@@ -158,7 +94,6 @@ async def on_ready():
         except Exception as e:
             print("Failed to sync commands:", e)
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
@@ -179,9 +114,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if member and role:
         try:
             await member.add_roles(role, reason=f"Reaction role via {key}")
+            await send_log(guild, f"✅ {member.mention} ได้รับ role {role.mention} ผ่าน reaction")
         except discord.Forbidden:
             pass
-
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
@@ -200,11 +135,53 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     if member and role:
         try:
             await member.remove_roles(role, reason=f"Reaction role removed via {key}")
+            await send_log(guild, f"❌ {member.mention} ถูกลบ role {role.mention} ผ่าน reaction")
         except discord.Forbidden:
             pass
 
-# ---------------------- SLASH COMMAND ----------------------
+# ---------------------- VERIFY SYSTEM ----------------------
+class VerifyView(discord.ui.View):
+    def __init__(self, role_id: int):
+        super().__init__(timeout=None)
+        self.role_id = role_id
+
+    @discord.ui.button(label="✅ ยืนยันตัวตน", style=discord.ButtonStyle.green, custom_id="verify_button")
+    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        role = interaction.guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ role ไม่ถูกต้อง", ephemeral=True)
+            return
+        try:
+            await interaction.user.add_roles(role, reason="Verify button clicked")
+            await interaction.response.send_message(f"✅ คุณได้รับ role {role.mention} แล้ว", ephemeral=True)
+            await send_log(interaction.guild, f"🟢 {interaction.user.mention} ยืนยันตัวตนและได้รับ {role.mention}")
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ บอทไม่มีสิทธิ์ให้ role นี้", ephemeral=True)
+
+@bot.tree.command(name="verifysetup", description="สร้างระบบยืนยันตัวตน (กดปุ่ม)")
+@app_commands.checks.has_permissions(manage_roles=True)
+@app_commands.describe(channel="ห้องที่จะโพสต์", role="role สำหรับผู้ผ่านการยืนยัน", log_channel="ห้องสำหรับ log แจ้งเตือน")
+async def verifysetup(interaction: discord.Interaction, channel: discord.TextChannel, role: discord.Role, log_channel: discord.TextChannel):
+    embed = discord.Embed(title="บอทยืนยันตัวตน", description="กดปุ่มด้านล่างเพื่อยืนยันตัวตนและรับยศ")
+    view = VerifyView(role.id)
+    msg = await channel.send(embed=embed, view=view)
+    verify_config[str(interaction.guild.id)] = {"role_id": role.id, "log_channel": log_channel.id, "message_id": msg.id, "channel_id": channel.id}
+    save_json(VERIFY_FILE, verify_config)
+    await interaction.response.send_message(f"✅ สร้างระบบ Verify ใน {channel.mention} แล้ว", ephemeral=True)
+
+
+# ---------------------- LOG FUNCTION ----------------------
+async def send_log(guild: discord.Guild, text: str):
+    config = verify_config.get(str(guild.id), {})
+    log_channel_id = config.get("log_channel")
+    if log_channel_id:
+        ch = guild.get_channel(log_channel_id)
+        if ch:
+            await ch.send(text)
+
+# ---------------------- SLASH COMMANDS ----------------------
 @bot.tree.command(name="createrole", description="สร้างโพสต์กดอิโมจิรับยศ (reaction role)")
+@app_commands.checks.has_permissions(manage_roles=True)
 @app_commands.describe(
     channel="จะโพสต์ลงห้องไหน",
     title="หัวข้อของ embed",
@@ -212,63 +189,55 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     pairs="รายการคู่ EMOJI=ROLE คั่นด้วยคอมมา หรือขึ้นบรรทัดใหม่",
     image_url="ลิงก์รูป/ไฟล์ gif (ถ้ามี)",
 )
-async def createrole(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    title: str,
-    description: str,
-    pairs: str,
-    image_url: str | None = None,
-):
-    """
-    Example pairs:
-    "😀=@Member, 🎮=@Gamer, <:cool:123456789012345678>=@Cool"
-    หรือขึ้นบรรทัดละหนึ่งคู่ก็ได้
-    """
+async def createrole(interaction: discord.Interaction, channel: discord.TextChannel, title: str, description: str, pairs: str, image_url: str | None = None):
     await interaction.response.defer(ephemeral=True)
     try:
         await ensure_react_permissions(channel)
-        raw_items, labels = parse_pairs(pairs)
-        items = await resolve_role_ids(interaction.guild, raw_items)
 
-        # Build embed
+        # parse input pairs
+        items = []
+        for raw in re.split(r",|\n", pairs):
+            item = raw.strip()
+            if not item:
+                continue
+            if "=" not in item:
+                raise ValueError(f"รูปแบบไม่ถูกต้อง: '{item}' (ควรเป็น EMOJI=ROLE)")
+            emoji_part, role_part = [p.strip() for p in item.split("=", 1)]
+            role = None
+            m = re.search(r"<@&(?P<id>\d+)>", role_part)
+            if m:
+                role = interaction.guild.get_role(int(m.group("id")))
+            elif role_part.isdigit():
+                role = interaction.guild.get_role(int(role_part))
+            else:
+                role = discord.utils.get(interaction.guild.roles, name=role_part)
+            if not role:
+                raise ValueError(f"ไม่พบ role: {role_part}")
+            emoji_key = normalize_emoji_key(emoji_part)
+            items.append((emoji_key, role.id, emoji_part))
+
+        # embed
         embed = discord.Embed(title=title, description=description)
-        lines = []
-        for _emoji_key, role_id, emoji_render in items:
-            role = interaction.guild.get_role(role_id)
-            if role is None:
-                raise ValueError("พบ role ที่ไม่ถูกต้องหลังการตรวจสอบ")
-            lines.append(f"{emoji_render}  →  {role.mention}")
+        lines = [f"{emoji} → {interaction.guild.get_role(role_id).mention}" for _, role_id, emoji in items]
         embed.add_field(name="กดอิโมจิเพื่อรับยศ", value="\n".join(lines), inline=False)
         embed.set_footer(text="เอาอิโมจิออก = ถอนยศ")
         if image_url:
             embed.set_image(url=image_url)
 
         msg = await channel.send(embed=embed)
-
-        # Save mapping
         emoji_map = {ek: rid for ek, rid, _ in items}
-        reaction_roles[str(msg.id)] = {
-            "emoji_map": emoji_map,
-            "guild_id": interaction.guild.id,
-            "channel_id": channel.id,
-        }
-        save_data(reaction_roles)
-
-        # Add the reactions
+        reaction_roles[str(msg.id)] = {"emoji_map": emoji_map, "guild_id": interaction.guild.id, "channel_id": channel.id}
+        save_json(REACTION_FILE, reaction_roles)
         await add_reactions_safely(msg, emoji_map.keys())
 
-        await interaction.followup.send(
-            f"สร้างข้อความรับยศแล้วใน {channel.mention} (message id: {msg.id})",
-            ephemeral=True,
-        )
-    except PermissionError as pe:
-        await interaction.followup.send(str(pe), ephemeral=True)
-    except ValueError as ve:
-        await interaction.followup.send(f"รูปแบบอินพุตผิดพลาด: {ve}", ephemeral=True)
+        await interaction.followup.send(f"✅ สร้างข้อความรับยศแล้วใน {channel.mention} (message id: {msg.id})", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ เกิดข้อผิดพลาด: {e}", ephemeral=True)
 
+
+
+# ---------------------- RUN ----------------------
 server_on()
-bot.run(os.getenv('TOKEN'))
+bot.run(os.getenv("TOKEN"))
+
 
