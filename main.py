@@ -170,6 +170,18 @@ async def verifysetup(interaction: discord.Interaction, channel: discord.TextCha
     await interaction.response.send_message(f"✅ สร้างระบบ Verify ใน {channel.mention} แล้ว", ephemeral=True)
 
 
+@bot.tree.command(name="delreactionrole", description="ลบ reaction role ที่สร้างไว้")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def delreactionrole(interaction: discord.Interaction, message_id: str):
+    if message_id in reaction_roles:
+        del reaction_roles[message_id]
+        save_json(REACTION_FILE, reaction_roles)
+        await interaction.response.send_message(f"✅ ลบ reaction role ของ message {message_id} แล้ว", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ ไม่พบ reaction role สำหรับ message นี้", ephemeral=True)
+
+
+
 # ---------------------- LOG FUNCTION ----------------------
 async def send_log(guild: discord.Guild, text: str):
     config = verify_config.get(str(guild.id), {})
